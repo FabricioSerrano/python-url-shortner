@@ -1,0 +1,105 @@
+# Service
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shortner-backend
+spec:
+  type: NodePort
+  selector:
+    io.kompose.service: shortner-backend
+  ports:
+    - port: 8000         # Porta interna do cluster
+      targetPort: 8000   # Porta do container
+      nodePort: 30080    # Porta externa no host
+
+# Autoscale
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shortner-backend-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shortner-backend
+  minReplicas: 2
+  maxReplicas: 15
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+
+
+# Deployment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kompose.cmd: C:\Users\fabricio.serrano\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f docker-compose.yml -o kubernetes-manifest.yaml
+    kompose.version: 1.37.0 (fb0539e64)
+  labels:
+    io.kompose.service: shortner-backend
+  name: shortner-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      io.kompose.service: shortner-backend
+  template:
+    metadata:
+      annotations:
+        kompose.cmd: C:\Users\fabricio.serrano\AppData\Local\Microsoft\WinGet\Packages\Kubernetes.kompose_Microsoft.Winget.Source_8wekyb3d8bbwe\kompose.exe convert -f docker-compose.yml -o kubernetes-manifest.yaml
+        kompose.version: 1.37.0 (fb0539e64)
+      labels:
+        io.kompose.service: shortner-backend
+    spec:
+      containers:
+        - envFrom:
+            - configMapRef:
+                name: shortner--env
+          image: python-url-shortener-shortner-backend:latest
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          name: shortner-backend
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          resources:        
+            requests:
+              cpu: "5m"
+              memory: "100Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      restartPolicy: Always
+
+
+# configmaps
+---
+apiVersion: v1
+data:
+  APP_ENDPOINT: app_endpoint
+  DATABASE_IP: cassandra
+  REDIS_CACHE_HOST: redis-cache
+  REDIS_COUNTER_HOST: redis-incr
+  SECRET_KEY: your-key
+kind: ConfigMap
+metadata:
+  labels:
+    io.kompose.service: shortner-backend-shortner--env
+  name: shortner--env
+

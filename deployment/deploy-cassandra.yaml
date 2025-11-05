@@ -1,0 +1,115 @@
+# Service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  labels:
+    app: cassandra
+spec:
+  ports:
+    - port: 9042
+      targetPort: 9042
+  clusterIP: None
+  selector:
+    app: cassandra
+
+# StatefulSet
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+spec:
+  serviceName: cassandra
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cassandra
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      containers:
+        - name: cassandra
+          image: cassandra
+          ports:
+            - containerPort: 9042
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - cqlsh
+                - -e
+                - describe keyspaces;
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: cassandra-data
+              mountPath: /var/lib/cassandra
+      restartPolicy: Always
+  volumeClaimTemplates:
+    - metadata:
+        name: cassandra-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+# ConfigMap
+
+---
+apiVersion: v1
+data:
+  init.cql: |
+    CREATE KEYSPACE IF NOT EXISTS shortner WITH REPLICATION = {'class': 'SimpleStrategy', 'replication_factor': 2};
+    USE shortner;
+    CREATE TABLE IF NOT EXISTS shortner.urls (shortcode TEXT PRIMARY KEY, long_url TEXT, created_at TIMESTAMP);
+kind: ConfigMap
+metadata:
+  annotations:
+    use-subpath: "true"
+  labels:
+    io.kompose.service: cassandra-init
+  name: cassandra-init-cm0
+
+
+# Job
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cassandra-init
+spec:
+  template:
+    spec:
+      containers:
+        - name: cassandra-init
+          image: cassandra:latest
+          command:
+            - bash
+            - -c
+            - |
+                echo 'Aguardando Cassandra...';
+                until cqlsh cassandra -e 'describe keyspaces'; do
+                  sleep 5;
+                done;
+                echo 'Cassandra pronto, executando init.cql';
+                cqlsh cassandra -f /init.cql;
+                echo 'Script executado com sucesso';
+          volumeMounts:
+            - mountPath: /init.cql
+              name: cassandra-init-cm0
+              subPath: init.cql
+      restartPolicy: Never
+      volumes:
+        - name: cassandra-init-cm0
+          configMap:
+            name: cassandra-init-cm0
+            items:
+              - key: init.cql
+                path: init.cql

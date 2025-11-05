@@ -1,0 +1,128 @@
+
+# Service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  labels:
+    app: redis-cache
+spec:
+  ports:
+    - name: client
+      port: 6379
+      targetPort: 6379
+  clusterIP: None
+  selector:
+    app: redis-cache
+
+
+# StatefulSet
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cache
+spec:
+  serviceName: redis-cache
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-cache
+  template:
+    metadata:
+      labels:
+        app: redis-cache
+    spec:
+      containers:
+        - name: redis-cache
+          image: redis:latest
+          command: ["redis-server"]
+          args:
+            - "--cluster-enabled"
+            - "yes"
+            - "--cluster-node-timeout"
+            - "5000"
+            - "--appendonly"
+            - "yes"
+            - "--cluster-config-file"
+            - "/data/nodes.conf"
+          env:
+            - name: REDIS_CLUSTER_ANNOUNCE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - containerPort: 6379
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: redis-cache-data
+              mountPath: /data
+      restartPolicy: Always
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-cache-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+  
+
+# Jobs
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rediscache-cluster-init
+spec:
+  template:
+    spec:
+      containers:
+        - name: rediscache-cluster-init
+          image: redis:latest
+          command:
+            - bash
+            - -c
+            - |
+                echo "Aguardando Redis..."
+
+                for i in 0 1 2; do
+                  until redis-cli -h redis-cache-$i.redis-cache.default.svc.cluster.local ping | grep PONG; do
+                    echo "Esperando redis-cache-$i..."
+                    sleep 2
+                  done
+                done
+
+                echo "Obtendo IPs dos pods Redis..."
+                until IP0=$(getent hosts redis-cache-0.redis-cache.default.svc.cluster.local | awk '{ print $1 }'); do sleep 2; done
+                until IP1=$(getent hosts redis-cache-1.redis-cache.default.svc.cluster.local | awk '{ print $1 }'); do sleep 2; done
+                until IP2=$(getent hosts redis-cache-2.redis-cache.default.svc.cluster.local | awk '{ print $1 }'); do sleep 2; done
+
+                echo "IPs detectados:"
+                echo "$IP0"
+                echo "$IP1"
+                echo "$IP2"
+
+                echo "Formando cluster com IPs reais..."
+                yes yes | redis-cli --cluster create \
+                  $IP0:6379 \
+                  $IP1:6379 \
+                  $IP2:6379 \
+                  --cluster-replicas 0
+
+                echo "Verificando estado do cluster..."
+                until redis-cli -h $IP0 -p 6379 cluster info | grep -q cluster_state:ok; do
+                  echo "Cluster ainda não está OK, aguardando..."
+                  sleep 2
+                done
+
+                echo "Cluster formado e verificado com sucesso."
+      restartPolicy: Never
